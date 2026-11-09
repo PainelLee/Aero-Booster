@@ -1,5 +1,28 @@
 --[[
-    PAINEL LEE  v1.0.7  -  FRUTIGER AERO UI (Info: Instagram support + creator credit)
+    PAINEL LEE  v1.0.9  -  FRUTIGER AERO UI (Info: Instagram support + creator credit)
+
+    NOVIDADES DA v1.0.9
+    - CORRIGIDO: ilhas/objetos distantes sumiam ao ativar o boost. Causa: a opcao "Reduzir qualidade
+      grafica" (v1.0.8) baixava o QualityLevel do Roblox, que reduz o que e desenhado de longe.
+      Opcao REMOVIDA por completo: o script nao toca mais no QualityLevel durante o boost
+      (so a "Limpeza profunda de RAM", desligada por padrao, troca por ~1s e devolve).
+
+    NOVIDADES DA v1.0.8 (compatibilidade com qualquer hardware + desempenho real)
+    - PERFIL DE HARDWARE: celular/tablet (so toque, sem teclado) liga sozinho o "Modo leve" e usa
+      orcamento de CPU menor (BudgetMs 1.5 / InstantMs 0.7). PC fraco pode ligar em Ajustes.
+    - "Forcar Precise" REMOVIDO do padrao: antes o script forcava RenderFidelity = Precise em
+      TODA malha/union do mapa (malha completa em qualquer distancia = mais memoria e mais GPU,
+      principal causa de queda de FPS em placa fraca/celular). Agora a fidelidade ORIGINAL do jogo
+      e mantida (nada deforma e nada pesa a mais). Opcional: CFG.ForcePrecise = true.
+    - SurfaceAppearance nao e mais "destacada" do objeto (guardava referencia forte e vazava RAM em
+      mapas com StreamingEnabled). Agora so as texturas sao limpas e depois restauradas.
+    - Orcamento por quadro ADAPTATIVO: recua quando o quadro demora mais que a media recente
+      (funciona em 30, 60, 120 ou 240 FPS, em vez de um limite fixo de 34 ms).
+    - Interface leve: blur de tela cheia, bolhas animadas e rotacao do contorno ficam desligados no
+      Modo leve e pausam quando o menu nao esta aberto.
+    - (removido na v1.0.9) "Reduzir qualidade grafica": fazia as ilhas distantes sumirem.
+    - Limpeza profunda de RAM vem DESLIGADA por padrao e nunca roda em celular (trocar a qualidade e
+      voltar recarrega texturas/malhas: engasgo e risco de fechar o jogo em aparelho com pouca RAM).
 
     NOVIDADES DA v5.4
     - 3 NIVEIS DE EFEITOS DE ATAQUE REAJUSTADOS (Ajustes > Intensidade dos efeitos):
@@ -92,9 +115,12 @@ local CFG = {
     ProtectNPCs    = true,   -- NPCs/inimigos com Humanoid intactos
     CharFx         = true,   -- partes extras presas ao personagem (auras/formas) contam como efeito
     Physics        = false,  -- CanTouch/CanQuery off em partes sem colisao (pode quebrar cliques/toques)
-    KeepShape      = true,   -- casas/arvores/pilares mantem a forma de longe (RenderFidelity Precise)
+    KeepShape      = true,   -- casas/arvores/pilares mantem a forma de longe (nao aplica Performance)
+    ForcePrecise   = false,  -- v1.0.8: opcional, forca malha completa de longe (PESADO; so PC forte)
     AutoRam        = false,  -- limpeza automatica (leve) de RAM a cada 60s
-    DeepRam        = true,   -- botao LIMPAR RAM faz limpeza profunda (troca a qualidade por ~1s)
+    DeepRam        = false,  -- limpeza profunda (troca a qualidade por ~1s; pode engasgar em aparelho fraco)
+    Lite           = false,  -- v1.0.8: interface leve (sem blur/animacoes); liga sozinho no celular
+    IsMobile       = false,  -- v1.0.8: preenchido abaixo pela deteccao de hardware
     ShowHud        = false,
     Brightness     = 1.5,    -- false para nao mexer no brilho
 
@@ -104,6 +130,15 @@ local CFG = {
     ColorCon       = 0.15,   -- contraste  (-0.5 a 0.5)
     ColorBri       = 0.05,   -- brilho do filtro (-0.3 a 0.3)
 }
+
+-- v1.0.8: perfil de hardware. Celular/tablet (so toque, sem teclado) usa orcamento menor e interface leve.
+if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+    CFG.IsMobile  = true
+    CFG.Lite      = true
+    CFG.BudgetMs  = 1.5
+    CFG.InstantMs = 0.7
+    CFG.DeepRam   = false
+end
 
 -- rate/life/size = multiplicadores (1 = original); fade = quanto da transparencia restante e somada
 -- (0 = igual ao original, 1 = invisivel); offFx = classes de efeito desligadas neste nivel.
@@ -339,14 +374,20 @@ local function optAtmosphere(o)
     end
 end
 
+-- v1.0.8: nao destaca mais o SurfaceAppearance (a lista "detached" guardava referencia forte e,
+-- em mapas com streaming, impedia a RAM das partes descarregadas de ser liberada).
+-- Agora so limpa os mapas de textura (cache fraco) e restaura depois.
 local function optSurfaceAppearance(o)
-    if not CFG.Textures or shielded(o) then return end
-    local par = o.Parent
-    if par then
-        detached[#detached + 1] = {o, par}
-        cacheCount = cacheCount + 1
-        o.Parent = nil
-    end
+    if not CFG.Textures or cache[o] or shielded(o) then return end
+    cache[o] = {o.ColorMap, o.MetalnessMap, o.NormalMap, o.RoughnessMap}
+    cacheCount = cacheCount + 1
+    o.ColorMap = ""
+    o.MetalnessMap = ""
+    o.NormalMap = ""
+    o.RoughnessMap = ""
+end
+local function resSurfaceAppearance(o, s)
+    o.ColorMap = s[1]; o.MetalnessMap = s[2]; o.NormalMap = s[3]; o.RoughnessMap = s[4]
 end
 
 local function optDecal(o)
@@ -389,10 +430,10 @@ local function physOpt(o, s)
     end
 end
 
--- v5.3: Precise so no mapa que ja existia na ativacao (modo scan) e em estruturas fixas
--- que chegam depois. Partes de efeito/projetil NAO sao forcadas a carregar a malha completa
--- (isso causava o engasgo no 1o ataque).
+-- v1.0.8: por padrao NAO mexe na fidelidade original da malha (antes forcava Precise em tudo, o que
+-- aumentava RAM/GPU). So forca se CFG.ForcePrecise = true. Partes de efeito/projetil nunca sao forcadas.
 EX.wantPrecise = function(o)
+    if not CFG.ForcePrecise then return false end
     if mode == "scan" then return true end
     return o.Anchored and (o.CanCollide or o.Size.Magnitude >= 8)
 end
@@ -423,8 +464,8 @@ local function optMeshPart(o)
     if s[4] ~= "" then o.MaterialVariant = "" end
     o.CastShadow = false
     o.Reflectance = 0
-    -- Precise = malha completa em qualquer distancia (nao deforma nem some de longe)
-    -- Performance = malha simplificada (era o que deformava casas/arvores/pilares)
+    -- KeepShape ligado: fidelidade original (nada deforma). Desligado: Performance (malha simplificada,
+    -- ganho real de GPU, mas casas/arvores/pilares podem deformar de longe).
     if CFG.KeepShape then
         if s[6] ~= Enum.RenderFidelity.Precise and EX.wantPrecise(o) then
             o.RenderFidelity = Enum.RenderFidelity.Precise
@@ -473,7 +514,7 @@ end
 HOPT.SpecialMesh = optSpecialMesh; HRES.SpecialMesh = resSpecialMesh
 HOPT.Decal = optDecal;         HRES.Decal = resDecal
 HOPT.Texture = optDecal;       HRES.Texture = resDecal
-HOPT.SurfaceAppearance = optSurfaceAppearance
+HOPT.SurfaceAppearance = optSurfaceAppearance; HRES.SurfaceAppearance = resSurfaceAppearance
 
 HOPT.ParticleEmitter = optEmitter; HRES.ParticleEmitter = resEmitter
 HOPT.Trail = optTrail;             HRES.Trail = resTrail
@@ -1078,8 +1119,13 @@ end
 
 -- Blur nativo do Roblox atua no mundo 3D inteiro (nao so atras do painel).
 -- Ele fica bem suave e ativo apenas enquanto a janela principal esta aberta.
+-- v1.0.8: no Modo leve (celular/GPU fraca) o blur de tela cheia fica desligado.
 local glassBlurTween, glassBlurVersion = nil, 0
 local function setGlassBlur(active)
+    if CFG.Lite then
+        active = false
+        if not (EX.uiBlur and EX.uiBlur.Parent) then return end
+    end
     local camera = Workspace.CurrentCamera
     if not camera then return end
     if not (EX.uiBlur and EX.uiBlur.Parent) then
@@ -1214,13 +1260,23 @@ local waterBubbles = {
     bubble(main, 0.76, 346, 20, 0.74),
 }
 -- Bolhas de agua flutuam lentamente, criando um detalhe vivo sem competir com os textos.
+-- v1.0.8: os tweens ficam guardados e so rodam com o menu aberto e fora do Modo leve
+-- (tween infinito dentro de CanvasGroup obriga a GUI a ser redesenhada a cada quadro).
+EX.bubbleTweens = {}
 for i, waterBubble in ipairs(waterBubbles) do
     local basePos = waterBubble.Position
     local floatY = 7 + i * 1.5
     local floatTween = TweenService:Create(waterBubble,
         TweenInfo.new(2.8 + i * 0.42, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
         {Position = UDim2.new(basePos.X.Scale, basePos.X.Offset, basePos.Y.Scale, basePos.Y.Offset - floatY)})
-    floatTween:Play()
+    EX.bubbleTweens[i] = floatTween
+end
+EX.setAnim = function(on)
+    local play = on and not CFG.Lite
+    for i = 1, #EX.bubbleTweens do
+        local tw = EX.bubbleTweens[i]
+        if play then pcall(tw.Play, tw) else pcall(tw.Pause, tw) end
+    end
 end
 
 -- cabecalho
@@ -1245,7 +1301,7 @@ do
     }, header)
     grad(titleLbl, BRAND, 0)
     label({
-        Position = UDim2.fromOffset(86, 33), Size = UDim2.new(1, -202, 0, 14), Text = "FRUTIGER AERO  •  v1.0.0",
+        Position = UDim2.fromOffset(86, 33), Size = UDim2.new(1, -202, 0, 14), Text = "FRUTIGER AERO  •  v1.0.9",
         Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = C.Muted, TextXAlignment = Enum.TextXAlignment.Left,
     }, header)
 end
@@ -1803,12 +1859,13 @@ switchRow("Remover texturas", "Materiais lisos, sem decals e texturas", "Texture
 switchRow("Formas sem deformar", "Casas, árvores e pilares mantêm a forma de longe", "KeepShape", true)
 switchRow("Remover atmosfera e bloom", "Atmosphere, Bloom, Blur, DoF, SunRays", "Atmos", true)
 switchRow("Luz e sombras leves", "Sem sombras globais, neblina e reflexos", "Lighting", true)
+switchRow("Modo leve (PC/celular fraco)", "Menu sem blur e sem animações", "Lite", false)
 switchRow("Proteger jogadores", "Corpo, acessórios e ferramentas intactos", "ProtectPlayers", true)
 switchRow("Efeitos presos ao personagem", "Auras e formas extras entram na otimização", "CharFx", true)
 switchRow("Proteger NPCs", "Inimigos e NPCs mantêm a aparência", "ProtectNPCs", true)
 switchRow("Física leve (avançado)", "Pode afetar cliques e toques locais", "Physics", true)
 switchRow("HUD de FPS na tela", "Contador flutuante e arrastável", "ShowHud", false)
-switchRow("Limpeza profunda de RAM", "Troca a qualidade por ~1s e devolve", "DeepRam", false)
+switchRow("Limpeza profunda de RAM", "Só PC forte: troca a qualidade por ~1s", "DeepRam", false)
 switchRow("Limpar RAM automático", "Limpeza leve a cada 60s, sem engasgo", "AutoRam", false)
 
 -- ============================================================
@@ -1831,17 +1888,17 @@ do
         "•  Ao fechar o menu o FPS e as cores voltam ao normal",
         "",
         '<font color="#589C3D"><b>RAM e Ping</b></font>',
-        "•  Limpar RAM: coleta completa do lixo do Lua + limpeza profunda",
-        "•  Limpeza profunda: a qualidade gráfica cai por ~1s e volta sozinha",
+        "•  Limpar RAM: coleta completa do lixo do Lua (+ limpeza profunda, se ligada)",
+        "•  Limpeza profunda: só em PC; a qualidade cai por ~1s e volta sozinha",
         "•  O valor liberado mostrado é medido de verdade e varia por jogo",
         "•  Otimizar Ping: mede, ajusta o cliente e mede de novo",
         "•  O ping real depende da sua internet e do servidor do jogo",
         "•  Ao fechar o menu os ajustes de rede voltam ao original",
         "",
         '<font color="#278A50"><b>O que não é tocado</b></font>',
-        "•  Distância de renderização e streaming",
-        "•  Forma dos objetos de longe (casas, árvores, pilares)",
-        "•  Qualidade gráfica do Roblox (só na limpeza profunda, por ~1s)",
+        "•  Distância de renderização, ilhas e objetos distantes",
+        "•  Nível de qualidade gráfica do Roblox",
+        "•  Fidelidade original das malhas (casas, árvores, pilares)",
         "•  Corpo, acessórios e ferramentas dos jogadores",
         "•  Aparência dos NPCs",
         "",
@@ -1849,6 +1906,8 @@ do
         "•  RightShift mostra ou oculta o menu",
         "•  Arraste o menu segurando em qualquer parte dele",
         "•  Abas com rolagem no celular: segure 0,3s parado e arraste",
+        "•  Celular: o Modo leve liga sozinho (menu sem blur nem animações)",
+        "•  PC fraco: ligue o Modo leve e a Intensidade Mínima",
         "•  Limpe a RAM parado, fora de combate (pode engasgar por um instante)",
         "•  Mudou um ajuste com o boost ligado? Ele reaplica sozinho",
         "",
@@ -2083,6 +2142,7 @@ local function openMenu()
     popScale.Scale = 0.88
     root.Visible = true
     setGlassBlur(true)
+    EX.setAnim(true)
 
     -- Primeiro toca o som de abertura junto com o fade-in; depois entra a música em loop.
     UIAudio.stop("intro", 0)
@@ -2105,6 +2165,7 @@ local function miniMenu()
     UIAudio.stop("music", 0.24)
     mini.Position = clampPos(mini, root.Position, 60, 30)
     setGlassBlur(false)
+    EX.setAnim(false)
     tween(root, 0.16, {GroupTransparency = 1}, Enum.EasingStyle.Quad)
     tween(popScale, 0.18, {Scale = 0.88})
     task.delay(0.19, function()
@@ -2122,6 +2183,7 @@ local function hideMenu()
     UIAudio.stop("intro", 0.12)
     UIAudio.stop("music", 0.24)
     setGlassBlur(false)
+    EX.setAnim(false)
     mini.Visible = false
     if root.Visible then
         tween(root, 0.18, {GroupTransparency = 1}, Enum.EasingStyle.Quad)
@@ -2235,10 +2297,16 @@ local function finalize()
 end
 
 local function step(dt)
-    EX.instantSpent = 0                                -- novo quadro: zera o orcamento dos handlers imediatos
+    EX.instantSpent = (dt > 0.05) and EX.instantMax or 0   -- novo quadro: zera o orcamento dos handlers imediatos (quadro muito lento: tudo vai para a fila)
     local t0 = os.clock()
     local budget = CFG.BudgetMs / 1000
-    if dt > 0.034 then budget = budget * 0.4 end       -- FPS caindo: o script recua
+    -- v1.0.8: orcamento adaptativo. Compara o quadro com a MEDIA recente (vale para 30, 60, 120 ou 240 FPS)
+    EX.dtAvg = EX.dtAvg and (EX.dtAvg * 0.9 + dt * 0.1) or dt
+    if dt > 0.05 then
+        budget = budget * 0.25
+    elseif dt > 0.016 and dt > EX.dtAvg * 1.4 then
+        budget = budget * 0.4                          -- FPS caindo: o script recua
+    end
 
     if mode == "restore" then
         if restoreChunk(t0, budget) then
@@ -2356,6 +2424,12 @@ onSetting = function(key, needsReapply)
         EX.applyVibrant()
         return
     end
+    if key == "Lite" then                              -- v1.0.8: aplica o Modo leve na hora
+        local open = (menuState == "open")
+        EX.setAnim(open)
+        setGlassBlur(open)
+        return
+    end
     if needsReapply and enabled and mode == "idle" then
         pendingReapply = true
         toast("Reaplicando ajustes...", C.Busy)
@@ -2386,6 +2460,7 @@ end)
 --   1) coletar TODO o lixo do heap Lua (inclui o lixo dos scripts do jogo)
 --   2) limpeza profunda: baixar a qualidade grafica por ~1s para o Roblox soltar o
 --      cache de texturas/malhas, e devolver a qualidade original em seguida
+--      (v1.0.8: desligada por padrao e nunca em celular)
 --   3) esvaziar os caches internos do proprio script
 -- O valor mostrado e a diferenca REAL medida em Stats (varia de jogo para jogo).
 -- ============================================================
@@ -2432,8 +2507,8 @@ RAM.clean = function(silent)
             RunService.Heartbeat:Wait()
 
             -- 2) limpeza profunda: o cache de texturas/malhas do Roblox e liberado
-            --    quando a qualidade cai; a original volta logo depois
-            if CFG.DeepRam then
+            --    quando a qualidade cai; a original volta logo depois (so PC, nunca celular)
+            if CFG.DeepRam and not CFG.IsMobile then
                 local okQ, q0 = pcall(function() return settings().Rendering.QualityLevel end)
                 if okQ and q0 ~= nil then
                     RAM.text.Text = "LIMPANDO CACHE..."
@@ -2644,9 +2719,10 @@ do
             if ok and mb then memVal.Text = string.format("%d", mb) end
         end
 
-        if menuState == "open" then
+        -- v1.0.8: a rotacao do contorno (redesenha o CanvasGroup) so roda fora do Modo leve e a 10 Hz
+        if menuState == "open" and not CFG.Lite then
             animAcc = animAcc + dt
-            if animAcc >= 0.05 then
+            if animAcc >= 0.1 then
                 animAcc = 0
                 strokeGrad.Rotation = (os.clock() * 70) % 360
             end
